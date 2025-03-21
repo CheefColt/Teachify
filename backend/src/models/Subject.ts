@@ -3,6 +3,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 export interface ISubject extends Document {
     name: string;
     code: string;
+    description?: string;
     teacher: mongoose.Types.ObjectId;
     syllabus: {
         raw: string;
@@ -31,6 +32,11 @@ const subjectSchema = new Schema({
         type: String,
         required: [true, 'Subject code is required'],
         unique: true,
+        trim: true
+    },
+    description: {
+        type: String,
+        default: '',
         trim: true
     },
     teacher: {
