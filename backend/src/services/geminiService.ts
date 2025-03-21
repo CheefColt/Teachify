@@ -53,9 +53,27 @@ export class GeminiService {
     this.model = this.genAI.getGenerativeModel({ model: modelName });
   }
 
-  async generateSlideOutline(topic: string, content: string): Promise<SlideStructure> {
+  async generateSlideOutline(
+    topic: string, 
+    content: string, 
+    style: string = 'modern', 
+    slideCount: number = 10,
+    includeSpeakerNotes: boolean = true
+  ): Promise<SlideStructure> {
     try {
-      const prompt = `Create a presentation outline for the topic: "${topic}" with the following content: "${content}". 
+      const styleDescription = this.getStyleDescription(style);
+      
+      const prompt = `Create a professional ${styleDescription} presentation outline for the topic: "${topic}" with the following content: "${content}".
+        
+        Create approximately ${slideCount} slides (not more than ${slideCount + 2}).
+        
+        The presentation should follow this structure:
+        1. Title slide
+        2. Overview/Agenda
+        3. Main content slides covering key topics
+        4. Summary/Conclusion
+        ${includeSpeakerNotes ? '5. Include helpful speaker notes for each slide' : ''}
+        
         Return the response in JSON format with the following structure:
         {
           "title": "main presentation title",
@@ -63,20 +81,41 @@ export class GeminiService {
             {
               "title": "slide title",
               "content": ["point 1", "point 2"],
-              "notes": "speaker notes"
+              "notes": ${includeSpeakerNotes ? '"speaker notes for this slide"' : 'null'}
             }
           ]
-        }`;
+        }
+        
+        Ensure all text is clear, concise, and follows best practices for effective presentations.
+        The content should be engaging and easy to understand.`;
 
       const result = await this.model.generateContent(prompt);
       const response = await result.response;
       const text = response.text();
       
-      // Remove markdown code blocks if presen
+      // Remove markdown code blocks if present
       const cleanedText = this.removeMarkdownCodeBlocks(text);
       return JSON.parse(cleanedText);
     } catch (error) {
       throw new Error(`Failed to generate slide outline: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Get descriptive text for presentation style
+   */
+  private getStyleDescription(style: string): string {
+    switch (style) {
+      case 'academic':
+        return 'formal, research-oriented with clear structure and academic terminology';
+      case 'modern':
+        return 'clean, contemporary with concise bullet points and visual emphasis';
+      case 'minimal':
+        return 'minimalist with essential information and clean layout';
+      case 'vibrant':
+        return 'engaging, colorful with dynamic content organization';
+      default:
+        return 'professional, balanced';
     }
   }
 

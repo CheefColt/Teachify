@@ -1,5 +1,13 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
+export interface MaterialInfo {
+    filename: string;
+    path: string;
+    type: string;
+    uploadDate: Date;
+    extractedText?: string;
+}
+
 export interface ISubject extends Document {
     name: string;
     code: string;
@@ -12,14 +20,17 @@ export interface ISubject extends Document {
     };
     content: Array<{
         topic: string;
-        materials: string[];
-        resources: string[];
+        content?: string;
+        keyPoints?: string[];
+        materials?: string[];
+        resources?: string[];
         lastUpdated: Date;
     }>;
     topics: [{
-        title: String,
-        subtopics: [String]
+        title: string,
+        subtopics: string[]
     }];
+    materials?: MaterialInfo[];
 }
 
 const subjectSchema = new Schema({
@@ -51,6 +62,8 @@ const subjectSchema = new Schema({
     },
     content: [{
         topic: String,
+        content: String,
+        keyPoints: [String],
         materials: [String],
         resources: [String],
         lastUpdated: { type: Date, default: Date.now }
@@ -58,6 +71,13 @@ const subjectSchema = new Schema({
     topics: [{
         title: String,
         subtopics: [String]
+    }],
+    materials: [{
+        filename: { type: String },
+        path: { type: String },
+        type: { type: String },
+        uploadDate: { type: Date, default: Date.now },
+        extractedText: { type: String }
     }]
 }, {
     timestamps: true

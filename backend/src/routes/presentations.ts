@@ -1,21 +1,14 @@
-import express, { Request, Response } from 'express';
-import { PresentationController } from '../controllers/presentationController';
+import { Router, Request, Response } from 'express';
 import { auth } from '../middleware/auth';
 import { SlideService } from '../services/slideService';
 import mongoose from 'mongoose';
-import { Subject } from '../models/Subject';
 
-const router = express.Router();
-const presentationController = new PresentationController();
+const router = Router();
 const slideService = new SlideService();
 
-// Define routes with proper controller methods
-router.get('/', auth, presentationController.getAllPresentations);
-router.get('/:id', auth, presentationController.getPresentation);
-router.post('/', auth, presentationController.createPresentation);
-
 /**
- * Generate a slide presentation from subject content
+ * Generate a presentation for a subject
+ * Requires subject ID and customization options
  */
 router.post('/generate', auth, async (req: Request, res: Response) => {
   try {
@@ -39,19 +32,6 @@ router.post('/generate', auth, async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Invalid subject ID format' });
     }
 
-    // Check if subject exists
-    const subject = await Subject.findById(subjectId);
-    if (!subject) {
-      return res.status(404).json({ message: 'Subject not found' });
-    }
-
-    // Check if syllabus has been analyzed
-    if (!subject.syllabus || !subject.syllabus.analyzed) {
-      return res.status(400).json({ 
-        message: 'Subject has not been analyzed yet. Please analyze the syllabus first.' 
-      });
-    }
-
     // Generate the presentation
     const generationOptions = {
       templateStyle: templateStyle || 'modern',
@@ -64,13 +44,17 @@ router.post('/generate', auth, async (req: Request, res: Response) => {
 
     const presentation = await slideService.generateFromSubject(subjectId, generationOptions);
     
-    // In a real implementation, this would save the presentation to the database
+    // Store the presentation (in a real implementation, this would save to database)
+    // For now, just return the generated content
     res.status(200).json({
       message: 'Presentation generated successfully',
       presentation
     });
   } catch (error) {
     console.error('Error generating presentation:', error);
+    if (error instanceof Error && error.message.includes('not been analyzed')) {
+      return res.status(400).json({ message: error.message });
+    }
     res.status(500).json({ 
       message: 'Error generating presentation', 
       error: error instanceof Error ? error.message : 'Unknown error' 
@@ -106,7 +90,8 @@ router.post('/:id/export', auth, async (req: Request, res: Response) => {
 });
 
 /**
- * Get presentations for a specific subject
+ * Mock endpoint to fetch all presentations for a subject
+ * In a real implementation, this would query from a database
  */
 router.get('/subject/:subjectId', auth, async (req: Request, res: Response) => {
   try {
@@ -150,4 +135,4 @@ router.get('/subject/:subjectId', auth, async (req: Request, res: Response) => {
   }
 });
 
-export default router;
+export default router; 

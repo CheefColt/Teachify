@@ -8,6 +8,8 @@ import { upload } from '../services/resourceManager';
 import fs from 'fs/promises';
 import mongoose from 'mongoose';
 import { GeminiService } from '../services/geminiService';
+import { ContentGenerator } from '../services/ai/contentGenerator';
+import { ResourceService } from '../services/resourceService';
 
 // Extended type for authenticated requests
 interface AuthenticatedRequest extends Request {
@@ -254,11 +256,420 @@ const analyzeSyllabus: AuthHandler = async (req, res) => {
     }
 };
 
+// Upload material for a subject
+const uploadMaterial: AuthHandler = async (req, res) => {
+    const { id } = req.params;
+    const materialFile = req.file;
+
+    console.log('Uploading material for subject:', id);
+    console.log('Material File:', materialFile ? {
+        filename: materialFile.filename,
+        path: materialFile.path,
+        size: materialFile.size,
+        mimetype: materialFile.mimetype
+    } : 'No file uploaded');
+
+    if (!req.user) {
+        return res.status(401).json({ message: 'Not authenticated' });
+    }
+
+    if (!materialFile) {
+        return res.status(400).json({ message: 'Material file is required' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid subject ID' });
+    }
+
+    try {
+        // Find the subject
+        const subject = await Subject.findById(id);
+        if (!subject) {
+            return res.status(404).json({ message: 'Subject not found' });
+        }
+
+        // Extract text from the material
+        const geminiService = new GeminiService();
+        let extractedText = '';
+        try {
+            extractedText = await geminiService.extractTextFromFile(materialFile.path);
+            console.log(`Extracted ${extractedText.length} characters from material`);
+        } catch (error) {
+            const extractionError = error as Error;
+            console.error('Error extracting text from material:', extractionError);
+            return res.status(500).json({ 
+                message: 'Failed to extract text from material',
+                error: extractionError.message
+            });
+        }
+
+        // Save material info to the subject
+        const materialInfo = {
+            filename: materialFile.originalname,
+            path: materialFile.path,
+            type: materialFile.mimetype,
+            uploadDate: new Date(),
+            extractedText: extractedText.substring(0, 1000) + '...' // Store a preview
+        };
+
+        // Initialize materials array if it doesn't exist
+        if (!Array.isArray(subject.materials)) {
+            // Create a new materials array if it doesn't exist
+            subject.materials = [];
+        }
+        
+        // Push the new material to the array
+        subject.materials.push(materialInfo);
+        
+        console.log("Saving material:", {
+            filename: materialInfo.filename,
+            type: materialInfo.type
+        });
+        
+        // Save the updated subject
+        await subject.save();
+
+        res.status(200).json({ 
+            message: 'Material uploaded successfully',
+            material: {
+                filename: materialFile.originalname,
+                type: materialFile.mimetype,
+                uploadDate: new Date()
+            }
+        });
+    } catch (error) {
+        const err = error as Error;
+        console.error('Error uploading material:', err);
+        return res.status(500).json({ 
+            message: 'Failed to upload material',
+            error: err.message
+        });
+    }
+};
+
+// Generate content from material
+const generateContentFromMaterial: AuthHandler = async (req, res) => {
+    const { id } = req.params;
+    const { topicId } = req.body;
+
+    if (!req.user) {
+        return res.status(401).json({ message: 'Not authenticated' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: 'Invalid subject ID' });
+    }
+
+    try {
+        // Find the subject
+        const subject = await Subject.findById(id);
+        if (!subject) {
+            return res.status(404).json({ message: 'Subject not found' });
+        }
+
+        // Check if the subject has materials
+        if (!subject.materials || subject.materials.length === 0) {
+            return res.status(400).json({ 
+                message: 'No materials found for this subject. Please upload materials first.' 
+            });
+        }
+
+        // Find the specified topic
+        let topicTitle = '';
+        if (topicId) {
+            // We need to cast the topic to access _id
+            type TopicWithId = { 
+                _id: mongoose.Types.ObjectId | string; 
+                title: string; 
+                subtopics: string[];
+            };
+            
+            const topic = subject.topics.find(t => {
+                const topicWithId = t as unknown as TopicWithId;
+                return topicWithId._id && topicWithId._id.toString() === topicId;
+            });
+            
+            if (!topic) {
+                return res.status(404).json({ message: 'Topic not found' });
+            }
+            topicTitle = topic.title;
+        } else if (subject.topics && subject.topics.length > 0) {
+            // Use the first topic if none specified
+            topicTitle = subject.topics[0].title;
+        } else {
+            return res.status(400).json({ message: 'No topics found for this subject' });
+        }
+
+        // Gather all material text
+        let combinedMaterialText = '';
+        for (const material of subject.materials) {
+            if (material.extractedText) {
+                combinedMaterialText += material.extractedText + '\n\n';
+            }
+        }
+
+        if (combinedMaterialText.length < 100) {
+            // Create a basic content if we don't have enough material
+            console.log('Not enough material text extracted. Using fallback content generation.');
+            
+            // Create basic content based on topic title
+            const basicContent = {
+                topic: topicTitle,
+                content: `This is a basic overview of ${topicTitle}. Add more materials to generate detailed content.`,
+                keyPoints: [`Key concepts of ${topicTitle}`, 'Add materials to see more key points'],
+                lastUpdated: new Date()
+            };
+            
+            // Update or add this basic content
+            if (!subject.content) {
+                subject.content = [];
+            }
+            
+            const contentIndex = subject.content.findIndex(c => c.topic === topicTitle);
+            if (contentIndex !== -1) {
+                subject.content[contentIndex] = basicContent;
+            } else {
+                subject.content.push(basicContent);
+            }
+            
+            await subject.save();
+            
+            // Return the basic content
+            return res.status(200).json({
+                message: 'Basic content created (not enough material text)',
+                content: {
+                    title: topicTitle,
+                    content: basicContent.content,
+                    keyPoints: basicContent.keyPoints,
+                    examples: [],
+                    references: []
+                }
+            });
+        }
+
+        try {
+            // Generate content using AI
+            console.log(`Generating content for topic: ${topicTitle}`);
+            console.log(`Using ${combinedMaterialText.length} characters of material text`);
+            
+            const contentGenerator = new ContentGenerator();
+            const generatedContent = await contentGenerator.generateContent({
+                topic: topicTitle,
+                previousContent: combinedMaterialText.substring(0, 5000) // Limit length for API
+            });
+
+            // Update the topic's content in the subject
+            const topicIndex = subject.topics.findIndex(t => {
+                const topicWithId = t as unknown as { _id: mongoose.Types.ObjectId | string };
+                return topicId ? topicWithId._id.toString() === topicId : t.title === topicTitle;
+            });
+
+            if (topicIndex !== -1) {
+                // If the content array doesn't exist, create it
+                if (!subject.content) {
+                    subject.content = [];
+                }
+
+                // Check if content already exists for this topic
+                const contentIndex = subject.content.findIndex(c => c.topic === topicTitle);
+                
+                if (contentIndex !== -1) {
+                    // Update existing content
+                    subject.content[contentIndex] = {
+                        topic: topicTitle,
+                        content: generatedContent.content,
+                        keyPoints: generatedContent.keyPoints,
+                        lastUpdated: new Date()
+                    };
+                } else {
+                    // Add new content
+                    subject.content.push({
+                        topic: topicTitle,
+                        content: generatedContent.content,
+                        keyPoints: generatedContent.keyPoints,
+                        lastUpdated: new Date()
+                    });
+                }
+
+                await subject.save();
+            }
+
+            res.status(200).json({ 
+                message: 'Content generated successfully',
+                content: generatedContent
+            });
+        } catch (aiError) {
+            console.error('Error with AI content generation:', aiError);
+            
+            // Create fallback content
+            const fallbackContent = {
+                title: topicTitle,
+                content: `Content for ${topicTitle} based on your materials. The system encountered an error generating detailed content.`,
+                keyPoints: ['Basic concepts and fundamentals', 'Practical applications', 'Theory and principles'],
+                examples: [],
+                references: [],
+                updatedAt: new Date()
+            };
+            
+            // Save fallback content to the subject
+            if (!subject.content) {
+                subject.content = [];
+            }
+            
+            const contentIndex = subject.content.findIndex(c => c.topic === topicTitle);
+            if (contentIndex !== -1) {
+                subject.content[contentIndex] = {
+                    topic: topicTitle,
+                    content: fallbackContent.content,
+                    keyPoints: fallbackContent.keyPoints,
+                    lastUpdated: new Date()
+                };
+            } else {
+                subject.content.push({
+                    topic: topicTitle,
+                    content: fallbackContent.content,
+                    keyPoints: fallbackContent.keyPoints,
+                    lastUpdated: new Date()
+                });
+            }
+            
+            await subject.save();
+            
+            // Return the fallback content with a warning
+            return res.status(200).json({
+                message: 'Content generated with fallback (AI processing error)',
+                content: fallbackContent,
+                warning: 'The AI encountered an error processing your materials. Basic content has been generated instead.'
+            });
+        }
+    } catch (error) {
+        const err = error as Error;
+        console.error('Error generating content from material:', err);
+        return res.status(500).json({ 
+            message: 'Failed to generate content',
+            error: err.message
+        });
+    }
+};
+
+// Replace the resource pooling endpoint with this updated version
+router.post('/:id/resources', auth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { topics, query, useRealUrls = false } = req.body;
+    
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid subject ID format' });
+    }
+
+    // Find the subject
+    const subject = await Subject.findById(id);
+    if (!subject) {
+      return res.status(404).json({ message: 'Subject not found' });
+    }
+
+    console.log(`Finding resources for subject "${subject.name}" with topics: ${topics.join(', ')} and query: ${query}, useRealUrls: ${useRealUrls}`);
+    
+    // Get the syllabus text if available
+    const syllabusText = subject.syllabus?.raw || '';
+    
+    // Use the resource service to find resources
+    const resourceService = new ResourceService();
+    const resources = await resourceService.findResources({
+      topics,
+      query: query || '',
+      limit: 10,
+      syllabusText, // Add syllabus text to help with context-aware resource finding
+      useRealUrls // Pass the useRealUrls flag to the resource service
+    });
+    
+    return res.json({ resources });
+  } catch (error) {
+    console.error('Error finding resources:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// New endpoint to track resource interactions
+router.post('/:id/resources/:resourceId/track', auth, async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+
+    const { id, resourceId } = req.params;
+    const { interactionType } = req.body;
+    
+    if (!['view', 'bookmark', 'download'].includes(interactionType)) {
+      return res.status(400).json({ message: 'Invalid interaction type' });
+    }
+    
+    // Validate subject exists
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid subject ID format' });
+    }
+    
+    const subject = await Subject.findById(id);
+    if (!subject) {
+      return res.status(404).json({ message: 'Subject not found' });
+    }
+    
+    // Track the interaction
+    const resourceService = new ResourceService();
+    await resourceService.trackResourceInteraction(
+      resourceId,
+      req.user.id,
+      interactionType
+    );
+    
+    return res.status(200).json({ message: 'Interaction tracked successfully' });
+  } catch (error) {
+    console.error('Error tracking resource interaction:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// New endpoint to get recommended resources
+router.get('/:id/recommended-resources', auth, async (req, res) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+
+    const { id } = req.params;
+    
+    // Validate subject exists
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid subject ID format' });
+    }
+    
+    const subject = await Subject.findById(id);
+    if (!subject) {
+      return res.status(404).json({ message: 'Subject not found' });
+    }
+    
+    // Get recommendations
+    const resourceService = new ResourceService();
+    const recommendations = await resourceService.getRecommendedResources(
+      req.user.id,
+      id
+    );
+    
+    return res.status(200).json({ resources: recommendations });
+  } catch (error) {
+    console.error('Error getting recommended resources:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Routes with error handling
 router.post('/', auth, upload.single('syllabusFile'), asyncHandler(createSubject));
 router.get('/', auth, asyncHandler(getSubjects));
 router.get('/:id', auth, asyncHandler(getSubjectById));
 router.put('/:id/syllabus', auth, asyncHandler(updateSyllabus));
 router.post('/:id/analyze-syllabus', auth, asyncHandler(analyzeSyllabus));
+router.post('/:id/materials', auth, upload.single('materialFile'), asyncHandler(uploadMaterial));
+router.post('/:id/generate-content', auth, asyncHandler(generateContentFromMaterial));
 
 export default router;
