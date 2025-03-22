@@ -9,6 +9,7 @@ import lectureRoutes from './routes/lecture';
 import presentationRoutes from './routes/presentation';
 import resourceRoutes from './routes/resource';
 import recommendationRoutes from './routes/recommendation';
+import geminiRoutes from './routes/gemini';
 import path from 'path';
 import helmet from 'helmet';
 import morgan from 'morgan';
@@ -55,6 +56,7 @@ app.use('/api/lectures', lectureRoutes);
 app.use('/api/presentations', presentationRoutes);
 app.use('/api/resources', resourceRoutes);
 app.use('/api/recommendations', recommendationRoutes);
+app.use('/api/gemini', geminiRoutes);
 
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   console.error(err.stack);

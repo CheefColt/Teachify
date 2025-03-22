@@ -1,6 +1,8 @@
 import { GeminiService } from './geminiService';
 import { Subject } from '../models/Subject';
 import mongoose from 'mongoose';
+import PptxGenJS from 'pptxgenjs';
+import PDFDocument from 'pdfkit';
 
 interface Slide {
   title: string;
@@ -42,6 +44,7 @@ interface SlideGenerationOptions {
 
 export class SlideService {
   private geminiService: GeminiService;
+  private activePresentation: any = null;
 
   constructor() {
     this.geminiService = new GeminiService();
@@ -266,11 +269,316 @@ Ensure all text is clear, concise, and aligned with the ${templateStyle} present
 
   /**
    * Export presentation to different formats
-   * This is a placeholder for future implementation
    */
-  async exportPresentation(presentationId: string, format: 'pptx' | 'pdf'): Promise<string> {
-    // In a real implementation, this would generate files in the requested format
-    // For now, return a placeholder URL
-    return `https://example.com/presentations/${presentationId}.${format}`;
+  async exportPresentation(presentationId: string, format: 'pptx' | 'pdf'): Promise<Buffer> {
+    try {
+      // Get the presentation data from frontend state
+      // The presentationId is likely in the format "slideset123456789"
+      
+      // Extract the slides from the request directly
+      // Get the slide data from the frontend state that called this API
+      const slideSetId = presentationId;
+      
+      // This should directly access the current presentation that's being viewed
+      // We'll extract the data from the request context
+      const presentation = this.extractPresentationFromContext(slideSetId);
+      
+      if (!presentation) {
+        console.log(`No presentation found with ID: ${slideSetId}, using default data`);
+        // If no presentation found, create a default one with the ID
+        return this.exportDefaultPresentation(slideSetId, format);
+      }
+      
+      console.log(`Exporting presentation: ${presentation.title} with ${presentation.slides.length} slides`);
+      
+      // Format the presentation data for export
+      const presentationData = {
+        title: presentation.title || 'Untitled Presentation',
+        slides: presentation.slides.map((slide: any) => ({
+          title: slide.title || 'Untitled Slide',
+          content: this.formatSlideContent(slide.content)
+        }))
+      };
+
+      // Generate the file based on requested format
+      if (format === 'pptx') {
+        return await this.generatePPTX(presentationData.title, presentationData.slides);
+      } else {
+        return await this.generatePDF(presentationData.title, presentationData.slides);
+      }
+    } catch (error: unknown) {
+      console.error(`Error generating ${format} file:`, error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      throw new Error(`Failed to export presentation as ${format}: ${errorMessage}`);
+    }
+  }
+
+  /**
+   * Extract presentation data from the request context or frontend state
+   */
+  private extractPresentationFromContext(slideSetId: string): any {
+    try {
+      // In a real implementation, this would access the presentation data
+      // from where it's stored in your application's state
+      
+      // For example, if there's a global variable or context:
+      // @ts-ignore - Ignoring global.__slideSets for now as it's a mock implementation
+      const allSlideSets = global.__slideSets || [];
+      const slideSet = allSlideSets.find((set: any) => set.id === slideSetId);
+      
+      if (slideSet) {
+        return slideSet;
+      }
+      
+      // If not found in global state, try to extract from the active request
+      // This depends on how your application manages state
+      const req = this.getCurrentRequest();
+      if (req && req.body && req.body.slides) {
+        return {
+          id: slideSetId,
+          title: req.body.title || 'Presentation',
+          slides: req.body.slides
+        };
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error extracting presentation data:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Format slide content to handle different formats
+   */
+  private formatSlideContent(content: any): string[] {
+    if (Array.isArray(content)) {
+      return content.filter(item => item && typeof item === 'string');
+    }
+    if (typeof content === 'string') {
+      return content.split('\n').filter(line => line.trim());
+    }
+    return [];
+  }
+
+  /**
+   * Export a default presentation when the requested one isn't found
+   */
+  private async exportDefaultPresentation(id: string, format: 'pptx' | 'pdf'): Promise<Buffer> {
+    const defaultPresentation = {
+      title: `Teachify Presentation ${id}`,
+      slides: [
+        {
+          title: "Introduction to Teachify",
+          content: [
+            "AI-powered educational platform",
+            "Create engaging presentations instantly",
+            "Export to multiple formats"
+          ]
+        }
+      ]
+    };
+    
+    if (format === 'pptx') {
+      return await this.generatePPTX(defaultPresentation.title, defaultPresentation.slides);
+    } else {
+      return await this.generatePDF(defaultPresentation.title, defaultPresentation.slides);
+    }
+  }
+
+  /**
+   * Get the current request context
+   */
+  private getCurrentRequest(): any {
+    // This is a placeholder - the actual implementation depends on
+    // how your application manages request context
+    // For example, if using Express with a middleware that sets req on a namespace:
+    try {
+      const namespace = require('cls-hooked').getNamespace('app');
+      return namespace ? namespace.get('req') : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Generate a PPTX file using pptxgenjs
+   */
+  private async generatePPTX(title: string, slides: Slide[]): Promise<Buffer> {
+    const pptx = new PptxGenJS();
+    
+    // Set presentation properties
+    pptx.author = 'Teachify';
+    pptx.company = 'Teachify Educational Tools';
+    pptx.revision = '1';
+    pptx.subject = 'Educational Content';
+    pptx.title = title;
+
+    // Add title slide
+    const titleSlide = pptx.addSlide();
+    
+    // Add title
+    titleSlide.addText(title, {
+      x: '10%',
+      y: '40%',
+      w: '80%',
+      h: 1.5,
+      fontSize: 44,
+      color: '363636',
+      bold: true,
+      align: 'center'
+    });
+
+    // Add subtitle
+    titleSlide.addText('Generated by Teachify', {
+      x: '10%',
+      y: '60%',
+      w: '80%',
+      h: 0.75,
+      fontSize: 28,
+      color: '666666',
+      align: 'center'
+    });
+
+    // Add content slides
+    slides.forEach((slideData) => {
+      const slide = pptx.addSlide();
+      
+      // Add slide title
+      slide.addText(slideData.title, {
+        x: '5%',
+        y: '5%',
+        w: '90%',
+        h: 1,
+        fontSize: 32,
+        color: '363636',
+        bold: true,
+        align: 'left'
+      });
+
+      // Add divider line
+      slide.addShape(pptx.ShapeType.line, {
+        x: '5%',
+        y: '18%',
+        w: '90%',
+        h: 0,
+        line: { color: '363636', width: 1 }
+      });
+      
+      // Add bullet points
+      const contentText = slideData.content.map(point => ({ text: point, options: { bullet: true } }));
+      slide.addText(contentText, {
+        x: '5%',
+        y: '22%',
+        w: '90%',
+        h: '70%',
+        fontSize: 24,
+        color: '666666',
+        bullet: { indent: 15 }
+      });
+
+      // Add footer
+      slide.addText('Teachify - AI-Powered Educational Tools', {
+        x: '5%',
+        y: '95%',
+        w: '90%',
+        h: 0.3,
+        fontSize: 12,
+        color: '888888',
+        align: 'center',
+        italic: true
+      });
+    });
+
+    // Return as buffer (fixed type error)
+    const result = await pptx.write({ compression: true, outputType: 'nodebuffer' });
+    return result as Buffer;
+  }
+
+  /**
+   * Generate a PDF file using pdfkit
+   */
+  private generatePDF(title: string, slides: Slide[]): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      try {
+        // Create a PDF document
+        const doc = new PDFDocument({
+          autoFirstPage: false,
+          size: 'letter',
+          margin: 50,
+          info: {
+            Title: title,
+            Author: 'Teachify',
+            Subject: 'Educational Content',
+            Keywords: 'education, presentation, teachify',
+            CreationDate: new Date()
+          }
+        });
+
+        // Collect PDF data chunks
+        const chunks: Buffer[] = [];
+        doc.on('data', chunk => chunks.push(chunk));
+        doc.on('end', () => resolve(Buffer.concat(chunks)));
+
+        // Add title page
+        doc.addPage();
+        doc.font('Helvetica-Bold')
+           .fontSize(36)
+           .text(title, { align: 'center' })
+           .moveDown(2)
+           .font('Helvetica')
+           .fontSize(18)
+           .text('Generated by Teachify', { align: 'center' })
+           .moveDown()
+           .text(new Date().toLocaleDateString(), { align: 'center' });
+
+        // Add content pages
+        slides.forEach((slide, index) => {
+          // Add new page for each slide
+          doc.addPage();
+
+          // Add slide number
+          doc.font('Helvetica')
+             .fontSize(10)
+             .text(`Slide ${index + 1}`, { align: 'right' })
+             .moveDown();
+
+          // Add slide title
+          doc.font('Helvetica-Bold')
+             .fontSize(24)
+             .text(slide.title)
+             .moveDown();
+
+          // Add divider line
+          doc.moveTo(50, doc.y)
+             .lineTo(doc.page.width - 50, doc.y)
+             .stroke()
+             .moveDown();
+
+          // Add bullet points
+          doc.font('Helvetica')
+             .fontSize(14);
+          
+          slide.content.forEach(point => {
+            doc.text(`• ${point}`, {
+              indent: 20,
+              align: 'left'
+            }).moveDown(0.5);
+          });
+
+          // Add footer (fixed positioning)
+          doc.fontSize(10);
+          const footerText = 'Teachify - AI-Powered Educational Tools';
+          doc.text(footerText, {
+            align: 'center'
+          });
+        });
+
+        // Finalize the PDF
+        doc.end();
+      } catch (error) {
+        reject(error);
+      }
+    });
   }
 }

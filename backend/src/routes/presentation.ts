@@ -84,23 +84,32 @@ router.post('/generate', auth, async (req: Request, res: Response) => {
 router.post('/:id/export', auth, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { format } = req.body;
-
-    if (!format || !['pptx', 'pdf'].includes(format)) {
-      return res.status(400).json({ message: 'Valid format (pptx or pdf) is required' });
+    const { format = 'pptx' } = req.body;
+    
+    if (!['pptx', 'pdf'].includes(format)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid format. Supported formats are pptx and pdf'
+      });
     }
 
-    const downloadUrl = await slideService.exportPresentation(id, format as 'pptx' | 'pdf');
+    // Get the file buffer from the service
+    const fileBuffer = await slideService.exportPresentation(id, format as 'pptx' | 'pdf');
     
-    res.status(200).json({
-      message: `Presentation exported to ${format} successfully`,
-      downloadUrl
-    });
+    // Set headers for file download
+    res.setHeader('Content-Type', format === 'pptx' 
+      ? 'application/vnd.openxmlformats-officedocument.presentationml.presentation' 
+      : 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="presentation.${format}"`);
+    
+    // Send the file buffer
+    return res.send(fileBuffer);
   } catch (error) {
     console.error(`Error exporting presentation:`, error);
-    res.status(500).json({ 
-      message: 'Error exporting presentation', 
-      error: error instanceof Error ? error.message : 'Unknown error' 
+    return res.status(500).json({
+      success: false,
+      message: 'Error exporting presentation',
+      error: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
